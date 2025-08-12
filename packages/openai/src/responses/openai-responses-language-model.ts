@@ -400,14 +400,13 @@ export class OpenAIResponsesLanguageModel implements LanguageModelV2 {
         }
 
         case 'image_generation_call': {
-          const mediaType = mapOpenAIImageFormatToMediaType(
-            part.output_format ?? 'png',
-          );
           const base64 = part.result;
           if (typeof base64 === 'string' && base64.length > 0) {
             content.push({
               type: 'file',
-              mediaType,
+              mediaType: mapOpenAIImageFormatToMediaTypeSimple(
+                part.output_format ?? 'png',
+              ),
               data: base64,
               providerMetadata: {
                 openai: {
@@ -617,10 +616,9 @@ export class OpenAIResponsesLanguageModel implements LanguageModelV2 {
         )
       : false;
 
-    // Track last partial per image_generation_call to optionally dedupe final if identical
     const imageProgress: Record<
       string,
-      { lastPartialIndex: number; lastBase64Hash: string }
+      { lastPartialIndex: number; lastBase64: string }
     > = {};
 
     return {
@@ -809,19 +807,19 @@ export class OpenAIResponsesLanguageModel implements LanguageModelV2 {
                 delete activeReasoning[value.item.id];
               } else if (value.item.type === 'image_generation_call') {
                 // Emit final image as a single file part, skip if identical to last partial
-                const outputFormat = value.item.output_format ?? 'png';
-                const mediaType = mapOpenAIImageFormatToMediaType(outputFormat);
                 const base64 = value.item.result;
                 if (typeof base64 === 'string' && base64.length > 0) {
                   const last = imageProgress[value.item.id];
                   const isDuplicate =
                     emitImagePartials &&
                     last != null &&
-                    last.lastBase64Hash === computeBase64Hash(base64);
+                    last.lastBase64 === base64;
                   if (!isDuplicate) {
                     controller.enqueue({
                       type: 'file',
-                      mediaType,
+                      mediaType: mapOpenAIImageFormatToMediaTypeSimple(
+                        value.item.output_format ?? 'png',
+                      ),
                       data: base64,
                       providerMetadata: {
                         openai: {
@@ -896,14 +894,14 @@ export class OpenAIResponsesLanguageModel implements LanguageModelV2 {
               });
             } else if (isOpenAIImagePartialChunk(value)) {
               if (emitImagePartials) {
-                const mediaType = mapOpenAIImageFormatToMediaType(
+                const mediaType = mapOpenAIImageFormatToMediaTypeSimple(
                   value.output_format ?? 'png',
                 );
                 const base64 = value.partial_image_b64;
                 if (typeof base64 === 'string' && base64.length > 0) {
                   imageProgress[value.item_id] = {
                     lastPartialIndex: value.partial_image_index,
-                    lastBase64Hash: computeBase64Hash(base64),
+                    lastBase64: base64,
                   };
                   controller.enqueue({
                     type: 'file',
@@ -1220,27 +1218,7 @@ function isResponseOutputItemAddedReasoningChunk(
   );
 }
 
-function mapOpenAIImageFormatToMediaType(format: string): string {
-  const lower = format.toLowerCase();
-  switch (lower) {
-    case 'png':
-      return 'image/png';
-    case 'jpeg':
-    case 'jpg':
-      return 'image/jpeg';
-    case 'webp':
-      return 'image/webp';
-    case 'gif':
-      return 'image/gif';
-    case 'bmp':
-      return 'image/bmp';
-    case 'tiff':
-    case 'tif':
-      return 'image/tiff';
-    default:
-      return `image/${lower}`;
-  }
-}
+// removed: inline media type normalization at call sites
 
 function isResponseAnnotationAddedChunk(
   chunk: z.infer<typeof openaiResponsesChunkSchema>,
@@ -1264,15 +1242,6 @@ function isErrorChunk(
   chunk: z.infer<typeof openaiResponsesChunkSchema>,
 ): chunk is z.infer<typeof errorChunkSchema> {
   return chunk.type === 'error';
-}
-
-// DJB2 hash for base64 strings (non-cryptographic; for equality dedupe only)
-function computeBase64Hash(value: string): string {
-  let hash = 5381;
-  for (let i = 0; i < value.length; i++) {
-    hash = ((hash << 5) + hash) ^ value.charCodeAt(i);
-  }
-  return (hash >>> 0).toString(16);
 }
 
 // OpenAI image partial chunk (not part of the strict union; handled via loose fallback)
@@ -1351,6 +1320,11 @@ function supportsPriorityProcessing(modelId: string): boolean {
     modelId.startsWith('o3') ||
     modelId.startsWith('o4-mini')
   );
+}
+
+function mapOpenAIImageFormatToMediaTypeSimple(formatOrType: string): string {
+  const lower = (formatOrType ?? 'png').toLowerCase().trim();
+  return lower.includes('/') ? lower : `image/${lower}`;
 }
 
 const openaiResponsesProviderOptionsSchema = z.object({
