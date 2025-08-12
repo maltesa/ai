@@ -104,6 +104,14 @@ export class OpenAIResponsesLanguageModel implements LanguageModelV2 {
 
     const strictJsonSchema = openaiOptions?.strictJsonSchema ?? false;
 
+    // Determine which includes are supported by the OpenAI API and which are SDK-only.
+    const requestedIncludes = openaiOptions?.include ?? undefined;
+    const apiSupportedIncludes = (requestedIncludes ?? []).filter(include =>
+      ['reasoning.encrypted_content', 'file_search_call.results'].includes(
+        include,
+      ),
+    );
+
     const baseArgs = {
       model: this.modelId,
       input: messages,
@@ -139,7 +147,8 @@ export class OpenAIResponsesLanguageModel implements LanguageModelV2 {
       user: openaiOptions?.user,
       instructions: openaiOptions?.instructions,
       service_tier: openaiOptions?.serviceTier,
-      include: openaiOptions?.include,
+      include:
+        apiSupportedIncludes.length > 0 ? apiSupportedIncludes : undefined,
 
       // model-specific settings:
       ...(modelConfig.isReasoningModel &&
@@ -299,6 +308,17 @@ export class OpenAIResponsesLanguageModel implements LanguageModelV2 {
                 ),
               }),
               z.object({
+                type: z.literal('image_generation_call'),
+                id: z.string(),
+                status: z.string().nullish(),
+                background: z.string().nullish(),
+                output_format: z.string().nullish(),
+                quality: z.string().nullish(),
+                result: z.string().nullish(),
+                revised_prompt: z.string().nullish(),
+                size: z.string().nullish(),
+              }),
+              z.object({
                 type: z.literal('function_call'),
                 call_id: z.string(),
                 name: z.string(),
@@ -375,6 +395,17 @@ export class OpenAIResponsesLanguageModel implements LanguageModelV2 {
                 },
               },
             });
+          }
+          break;
+        }
+
+        case 'image_generation_call': {
+          const mediaType = mapOpenAIImageFormatToMediaType(
+            part.output_format ?? 'png',
+          );
+          const base64 = part.result;
+          if (typeof base64 === 'string' && base64.length > 0) {
+            content.push({ type: 'file', mediaType, data: base64 });
           }
           break;
         }
@@ -562,6 +593,20 @@ export class OpenAIResponsesLanguageModel implements LanguageModelV2 {
       }
     > = {};
 
+    const emitImagePartials = Array.isArray(
+      options.providerOptions?.openai?.include,
+    )
+      ? options.providerOptions.openai.include.includes(
+          'image_generation_call.partials',
+        )
+      : false;
+
+    // Track last partial per image_generation_call to optionally dedupe final if identical
+    const imageProgress: Record<
+      string,
+      { lastPartialIndex: number; lastBase64Hash: string }
+    > = {};
+
     return {
       stream: response.pipeThrough(
         new TransformStream<
@@ -746,6 +791,25 @@ export class OpenAIResponsesLanguageModel implements LanguageModelV2 {
                 }
 
                 delete activeReasoning[value.item.id];
+              } else if (value.item.type === 'image_generation_call') {
+                // Emit final image as a single file part, skip if identical to last partial
+                const outputFormat = value.item.output_format ?? 'png';
+                const mediaType = mapOpenAIImageFormatToMediaType(outputFormat);
+                const base64 = value.item.result;
+                if (typeof base64 === 'string' && base64.length > 0) {
+                  const last = imageProgress[value.item.id];
+                  const isDuplicate =
+                    emitImagePartials &&
+                    last != null &&
+                    last.lastBase64Hash === computeBase64Hash(base64);
+                  if (!isDuplicate) {
+                    controller.enqueue({
+                      type: 'file',
+                      mediaType,
+                      data: base64,
+                    });
+                  }
+                }
               }
             } else if (isResponseFunctionCallArgumentsDeltaChunk(value)) {
               const toolCall = ongoingToolCalls[value.output_index];
@@ -802,6 +866,24 @@ export class OpenAIResponsesLanguageModel implements LanguageModelV2 {
                   },
                 },
               });
+            } else if (isOpenAIImagePartialChunk(value)) {
+              if (emitImagePartials) {
+                const mediaType = mapOpenAIImageFormatToMediaType(
+                  value.output_format ?? 'png',
+                );
+                const base64 = value.partial_image_b64;
+                if (typeof base64 === 'string' && base64.length > 0) {
+                  imageProgress[value.item_id] = {
+                    lastPartialIndex: value.partial_image_index,
+                    lastBase64Hash: computeBase64Hash(base64),
+                  };
+                  controller.enqueue({
+                    type: 'file',
+                    mediaType,
+                    data: base64,
+                  });
+                }
+              }
             } else if (isResponseFinishedChunk(value)) {
               finishReason = mapOpenAIResponseFinishReason({
                 finishReason: value.response.incomplete_details?.reason,
@@ -928,6 +1010,11 @@ const responseOutputItemAddedSchema = z.object({
       id: z.string(),
       status: z.string(),
     }),
+    z.object({
+      type: z.literal('image_generation_call'),
+      id: z.string(),
+      status: z.string().nullish(),
+    }),
   ]),
 });
 
@@ -966,6 +1053,17 @@ const responseOutputItemDoneSchema = z.object({
       type: z.literal('file_search_call'),
       id: z.string(),
       status: z.literal('completed'),
+    }),
+    z.object({
+      type: z.literal('image_generation_call'),
+      id: z.string(),
+      status: z.literal('completed'),
+      background: z.string().nullish(),
+      output_format: z.string().nullish(),
+      quality: z.string().nullish(),
+      result: z.string().nullish(),
+      revised_prompt: z.string().nullish(),
+      size: z.string().nullish(),
     }),
   ]),
 });
@@ -1082,6 +1180,28 @@ function isResponseOutputItemAddedReasoningChunk(
   );
 }
 
+function mapOpenAIImageFormatToMediaType(format: string): string {
+  const lower = format.toLowerCase();
+  switch (lower) {
+    case 'png':
+      return 'image/png';
+    case 'jpeg':
+    case 'jpg':
+      return 'image/jpeg';
+    case 'webp':
+      return 'image/webp';
+    case 'gif':
+      return 'image/gif';
+    case 'bmp':
+      return 'image/bmp';
+    case 'tiff':
+    case 'tif':
+      return 'image/tiff';
+    default:
+      return `image/${lower}`;
+  }
+}
+
 function isResponseAnnotationAddedChunk(
   chunk: z.infer<typeof openaiResponsesChunkSchema>,
 ): chunk is z.infer<typeof responseAnnotationAddedSchema> {
@@ -1104,6 +1224,38 @@ function isErrorChunk(
   chunk: z.infer<typeof openaiResponsesChunkSchema>,
 ): chunk is z.infer<typeof errorChunkSchema> {
   return chunk.type === 'error';
+}
+
+// DJB2 hash for base64 strings (non-cryptographic; for equality dedupe only)
+function computeBase64Hash(value: string): string {
+  let hash = 5381;
+  for (let i = 0; i < value.length; i++) {
+    hash = ((hash << 5) + hash) ^ value.charCodeAt(i);
+  }
+  return (hash >>> 0).toString(16);
+}
+
+// OpenAI image partial chunk (not part of the strict union; handled via loose fallback)
+type OpenAIImagePartialChunk = {
+  type: 'response.image_generation_call.partial_image';
+  sequence_number: number;
+  output_index: number;
+  item_id: string;
+  partial_image_index: number;
+  partial_image_b64: string;
+  size?: string;
+  quality?: string;
+  background?: string;
+  output_format?: string;
+};
+
+function isOpenAIImagePartialChunk(
+  chunk: z.infer<typeof openaiResponsesChunkSchema>,
+): chunk is OpenAIImagePartialChunk {
+  return (
+    (chunk as any)?.type === 'response.image_generation_call.partial_image' &&
+    typeof (chunk as any)?.partial_image_b64 === 'string'
+  );
 }
 
 type ResponsesModelConfig = {
@@ -1173,7 +1325,13 @@ const openaiResponsesProviderOptionsSchema = z.object({
   reasoningSummary: z.string().nullish(),
   serviceTier: z.enum(['auto', 'flex', 'priority']).nullish(),
   include: z
-    .array(z.enum(['reasoning.encrypted_content', 'file_search_call.results']))
+    .array(
+      z.enum([
+        'reasoning.encrypted_content',
+        'file_search_call.results',
+        'image_generation_call.partials',
+      ]),
+    )
     .nullish(),
   textVerbosity: z.enum(['low', 'medium', 'high']).nullish(),
 });
