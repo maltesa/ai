@@ -1218,8 +1218,6 @@ function isResponseOutputItemAddedReasoningChunk(
   );
 }
 
-// removed: inline media type normalization at call sites
-
 function isResponseAnnotationAddedChunk(
   chunk: z.infer<typeof openaiResponsesChunkSchema>,
 ): chunk is z.infer<typeof responseAnnotationAddedSchema> {
@@ -1244,7 +1242,6 @@ function isErrorChunk(
   return chunk.type === 'error';
 }
 
-// OpenAI image partial chunk (not part of the strict union; handled via loose fallback)
 type OpenAIImagePartialChunk = {
   type: 'response.image_generation_call.partial_image';
   sequence_number: number;
