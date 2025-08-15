@@ -105,18 +105,6 @@ export class MistralChatLanguageModel implements LanguageModelV2 {
       });
     }
 
-    if (
-      responseFormat != null &&
-      responseFormat.type === 'json' &&
-      responseFormat.schema != null
-    ) {
-      warnings.push({
-        type: 'unsupported-setting',
-        setting: 'responseFormat',
-        details: 'JSON response format schema is not supported',
-      });
-    }
-
     const baseArgs = {
       // model id:
       model: this.modelId,
@@ -132,7 +120,15 @@ export class MistralChatLanguageModel implements LanguageModelV2 {
 
       // response format:
       response_format:
-        responseFormat?.type === 'json' ? { type: 'json_object' } : undefined,
+        responseFormat?.type === 'json'
+          ? responseFormat.schema
+            ? {
+                type: 'json_schema',
+                description: responseFormat.description,
+                schema: responseFormat.schema,
+              }
+            : { type: 'json_object' }
+          : undefined,
 
       // mistral-specific provider options:
       document_image_limit: options.documentImageLimit,
