@@ -148,7 +148,15 @@ export class MistralChatLanguageModel implements LanguageModelV2 {
       // response format:
       // TODO add JSON schema support (see OpenAI implementation)
       response_format:
-        responseFormat?.type === 'json' ? { type: 'json_object' } : undefined,
+        responseFormat?.type === 'json'
+          ? responseFormat.schema
+            ? {
+                type: 'json_schema',
+                description: responseFormat.description,
+                schema: responseFormat.schema,
+              }
+            : { type: 'json_object' }
+          : undefined,
 
       // mistral-specific provider options:
       document_image_limit: options.documentImageLimit,
