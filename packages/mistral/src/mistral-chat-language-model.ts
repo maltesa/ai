@@ -152,8 +152,12 @@ export class MistralChatLanguageModel implements LanguageModelV2 {
           ? responseFormat.schema
             ? {
                 type: 'json_schema',
-                description: responseFormat.description,
-                schema: responseFormat.schema,
+                json_schema: {
+                  name: responseFormat.name ?? 'Schema',
+                  description: responseFormat.description,
+                  schema: responseFormat.schema,
+                  strict: false,
+                },
               }
             : { type: 'json_object' }
           : undefined,
