@@ -12,7 +12,6 @@ import {
   createJsonResponseHandler,
   FetchFunction,
   generateId,
-  injectJsonInstructionIntoMessages,
   parseProviderOptions,
   ParseResult,
   postJsonToApi,
@@ -110,28 +109,6 @@ export class MistralChatLanguageModel implements LanguageModelV2 {
       });
     }
 
-    // TODO remove when we have JSON schema support (see OpenAI implementation)
-    if (
-      responseFormat != null &&
-      responseFormat.type === 'json' &&
-      responseFormat.schema != null
-    ) {
-      warnings.push({
-        type: 'unsupported-setting',
-        setting: 'responseFormat',
-        details: 'JSON response format schema is not supported',
-      });
-    }
-
-    // For Mistral we need to need to instruct the model to return a JSON object.
-    // https://docs.mistral.ai/capabilities/structured-output/structured_output_overview/
-    if (responseFormat?.type === 'json') {
-      prompt = injectJsonInstructionIntoMessages({
-        messages: prompt,
-        schema: responseFormat.schema,
-      });
-    }
-
     const baseArgs = {
       // model id:
       model: this.modelId,
@@ -146,17 +123,16 @@ export class MistralChatLanguageModel implements LanguageModelV2 {
       random_seed: seed,
 
       // response format:
-      // TODO add JSON schema support (see OpenAI implementation)
       response_format:
         responseFormat?.type === 'json'
           ? responseFormat.schema
             ? {
                 type: 'json_schema',
                 json_schema: {
-                  name: responseFormat.name ?? 'Schema',
-                  description: responseFormat.description,
                   schema: responseFormat.schema,
-                  strict: false,
+                  strict: options.strictJsonSchema ?? false,
+                  name: responseFormat.name ?? 'response',
+                  description: responseFormat.description,
                 },
               }
             : { type: 'json_object' }

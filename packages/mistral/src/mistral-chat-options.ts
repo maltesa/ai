@@ -34,6 +34,13 @@ Defaults to `false`.
 
   documentImageLimit: z.number().optional(),
   documentPageLimit: z.number().optional(),
+
+  /**
+   * Whether to use strict JSON schema validation.
+   *
+   * @default false
+   */
+  strictJsonSchema: z.boolean().optional(),
 });
 
 export type MistralProviderOptions = z.infer<typeof mistralProviderOptions>;
